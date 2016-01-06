@@ -9,7 +9,38 @@ import (
   "strconv"
   "os"
   "encoding/binary"
+  "net/http"
+  "io/ioutil"
+  "encoding/json"
+  "net/url"
 )
+
+type Servers struct {
+  Cluster string `json:"cluster"`
+  Servers []string `json:"servers"`
+  WebsocketsServers []string `json:"websockets_servers"`
+}
+
+func chatServer(channel string) (string, []string, error) {
+  resp, err := http.Get("http://tmi.twitch.tv/servers?channel=" + url.QueryEscape(channel))
+  if err != nil {
+    return "", []string{}, err
+  }
+
+  defer resp.Body.Close()
+  body, err := ioutil.ReadAll(resp.Body)
+  if err != nil {
+    return "", []string{}, err
+  }
+
+  var response Servers
+  err = json.Unmarshal(body, &response)
+  if err != nil {
+    return "", []string{}, err
+  }
+
+  return response.Cluster, response.Servers, nil
+}
 
 type TwitchLogger struct {
   conn net.Conn
@@ -18,13 +49,13 @@ type TwitchLogger struct {
   file *os.File
 }
 
-func Connect(hostname string, port int) *TwitchLogger {
-  conn, err := net.Dial("tcp", hostname + ":" + strconv.Itoa(port))
+func Connect(endpoint string) *TwitchLogger {
+  conn, err := net.Dial("tcp", endpoint)
   if err != nil {
     log.Fatal("Cannot connect to IRC server: ", err)
   }
 
-  fmt.Printf("Connected to %s:%d.\n", hostname, port)
+  fmt.Printf("Connected to %s.\n", endpoint)
 
   file, err := os.Create("twitch-" + strconv.FormatInt(time.Now().UnixNano(), 10) + ".txt")
   if err != nil {
@@ -87,7 +118,7 @@ func (twitch *TwitchLogger) joinChannels() {
   }
 }
 
-func (twitch *TwitchLogger) sendPong() {
+func (twitch *TwitchLogger) sendPongs() {
   for {
     time.Sleep(10 * time.Second);
     twitch.sendCommand("PONG tmi.twitch.tv")
@@ -103,7 +134,7 @@ func (twitch *TwitchLogger) Login(username string, password string) {
   twitch.sendCommand("CAP REQ :twitch.tv/membership")
 
   go twitch.joinChannels();
-  go twitch.sendPong();
+  go twitch.sendPongs();
 }
 
 func (twitch *TwitchLogger) Listen() {
@@ -121,22 +152,22 @@ func (twitch *TwitchLogger) Join(channel string) {
 func main() {
   channels := os.Args[1:]
 
-  clientCount := (len(channels) / 100) + 1
+  clientCount := len(channels)
   clients := make([]*TwitchLogger, 0, clientCount)
 
-  for i := 0; i < clientCount; i++ {
-    client := Connect("irc.twitch.tv", 6667)
-    client.Login("justinfan0", "")
-    clients = append(clients, client)
-  }
-
-  for i, channel := range channels {
+  for _, channel := range channels {
     if strings.TrimSpace(channel) == "" {
       continue
     }
 
-    clientIndex := i % clientCount
-    clients[clientIndex].Join(channel)
+    cluster, servers, _ := chatServer(channel)
+    server := servers[0]
+    fmt.Printf("#%s is hosted on %s (%s).\n", channel, server, cluster)
+
+    client := Connect(server)
+    client.Login("justinfan0", "")
+    client.Join(channel)
+    clients = append(clients, client)
   }
 
   for _, client := range clients {
